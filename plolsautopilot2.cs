@@ -187,8 +187,47 @@ private void Frame(string args) {
 
     ScreenWriteln($"State = {state} ({frameCounter++})");
 
+
+    if (state == "waiting") {
+        if (args == "continue") {
+            state = "followingWaypoints";
+        }
+    }
+
+
     if (state == "followingWaypoints") {
-        var wp = FigureOutWhereWeHeaded(currentPos, args);
+        var idx = args != null && args != "" ? waypoints.FindIndex(w => w.Name == args) : -1;
+        if (idx != -1) {
+            currentWaypointIndex = idx;
+        } else {
+            var wp2 = waypoints[currentWaypointIndex];
+
+            if ((wp2.WorldPos - currentPos).Length() < wp2.Radius) {
+                currentWaypointIndex += 1;
+
+                foreach (var action in wp2.OnArriveActions) {
+                    if (action.Action == "wait") {
+                        state = "waiting";
+                        ResetThrusters();
+                    } else if (action.Action == "notify") {
+                        var block = (GridTerminalSystem.GetBlockWithName(action.ComputerName) as IMyProgrammableBlock);
+                        fuck = block == null ? "fuck" : "fuck???";
+                        fuck += action.ComputerName + "(" + action.Argument + ")";
+                        block?.TryRun(action.Argument);
+                    }
+                }
+
+            }
+
+            if (currentWaypointIndex >= waypoints.Count) {
+                currentWaypointIndex = 0;
+            }
+        }
+    }
+
+    if (state == "followingWaypoints") {
+
+        var wp = waypoints[currentWaypointIndex];
 
         var worldToShipCoords = Matrix.Transpose(Me.WorldMatrix);
 
@@ -239,39 +278,6 @@ private void FuckWithThrusters(double velocityDeltaComponent, List<IMyThrust> po
 }
 
 private string fuck = "";
-
-private Waypoint FigureOutWhereWeHeaded(Vector3D currentPos, string args) {
-
-    var idx = args != null && args != "" ? waypoints.FindIndex(w => w.Name == args) : -1;
-    if (idx != -1) {
-        currentWaypointIndex = idx;
-    } else {
-        var wp = waypoints[currentWaypointIndex];
-
-        if ((wp.WorldPos - currentPos).Length() < wp.Radius) {
-            currentWaypointIndex += 1;
-
-
-            foreach (var action in wp.OnArriveActions) {
-                if (action.Action == "wait") {
-                    // set state to waiting
-                } else if (action.Action == "notify") {
-                    var block = (GridTerminalSystem.GetBlockWithName(action.ComputerName) as IMyProgrammableBlock);
-                    fuck = block == null ? "fuck" : "fuck???";
-                    fuck += action.ComputerName + "(" + action.Argument + ")";
-                    block?.TryRun(action.Argument);
-                }
-            }
-
-        }
-
-        if (currentWaypointIndex >= waypoints.Count) {
-            currentWaypointIndex = 0;
-        }
-    }
-
-    return waypoints[currentWaypointIndex];
-}
 
 private void StartFrame() {
     if (permanentlySavedInitString == null) {
