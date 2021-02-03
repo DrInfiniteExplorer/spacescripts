@@ -10,6 +10,10 @@ public Program()
     queryListener = IGC.RegisterBroadcastListener("YoWhereAreYouMan");
     queryListener.SetMessageCallback("ayy?");
     
+    Me.GetSurface(1).ContentType = ContentType.TEXT_AND_IMAGE;
+    Me.GetSurface(1).WriteText("Grid Announce\nComputer");
+    Me.GetSurface(1).FontSize = 3.8f;
+    Me.GetSurface(1).Alignment = TextAlignment.CENTER;    
 }
 
 
@@ -85,26 +89,4 @@ void Main(string argument, UpdateType updateSource)
         }
     }
 
-}
-
-}
-
-static class Testy {
-public static TV GetValue<TK, TV>(this IDictionary<TK, TV> dict, TK key, TV defaultValue = default(TV))
-{
-    TV value;
-    return dict.TryGetValue(key, out value) ? value : defaultValue;
-}
-
-public static string ToDebugString<TKey, TValue> (this IDictionary<TKey, TValue> dictionary)
-{
-    return string.Join("\n", dictionary.Select(kv => kv.Key + "=" + kv.Value).ToArray()) + "\n";
-}
-
-public static Dictionary<string, string> LoadDict(this string str) {
-    return str
-        .Split('\n')
-        .Select (part  => part.Split('='))
-        .Where (part => part.Length == 2 && part[0].Trim() != "" && part[1].Trim() != "")
-        .ToDictionary (sp => sp[0].Trim(), sp => sp[1].Trim());
 }
