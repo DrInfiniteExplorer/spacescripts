@@ -232,7 +232,12 @@ class UI {
     
     public void Update(TimeSpan timeSinceLastUpdate) {
         lastTime += timeSinceLastUpdate;
-        display.Clear();
+        display.Clear();        
+        int rolly = Math.Sign(input?.RollIndicator ?? 0);
+        int rollDiff = Math.Sign(rolly - prevRollSign);
+        int pressRoll = prevRollSign == 0 ? rollDiff : 0;
+        display.Writeln($"{prevRollSign} {rolly} {rollDiff} {pressRoll}");
+        prevRollSign = rolly;
         if(messages.Count() > 0) 
         {
             var msg = messages.Peek();
@@ -247,17 +252,13 @@ class UI {
         }
         
         if(yesNoQueries.Count() > 0) {
-            display.Clear();
             var query = yesNoQueries.Peek();
             display.Writeln(query.prompt);
             display.Writeln("  Yes: Q");
             display.Writeln("   No: E");
-            if(input == null) return;
-            var rolly = Math.Sign(input.RollIndicator);
-            if(rolly == 0 || rolly == prevRollSign) return;
-            prevRollSign = rolly;
+            if(pressRoll == 0) return;
             yesNoQueries.Dequeue();
-            query.action(rolly < 0);
+            query.action(pressRoll < 0);
             
         }
     }
@@ -416,7 +417,7 @@ struct Display {
         var pixelsAsFont1 = surface.MeasureStringInPixels(builder, "Debug", 1.0f);
         var pixelsOnSurface = surface.SurfaceSize;
         var ayy = pixelsOnSurface / pixelsAsFont1;
-        surface.FontSize = Math.Min(ayy.X * 2, ayy.Y);
+        surface.FontSize = Math.Min(ayy.X, ayy.Y) * 2;
         surface.WriteText(builder, false);
     }
 }
