@@ -1,28 +1,35 @@
 
 private MyIni configIni = new MyIni();
 
-UI ui = new UI();
+UI mainUi = new UI();
+UI auxUi = new UI();
 
 Display alignDisplay = new Display(false);
 Display comDisplay = new Display(false);
 
 CachedBlock<IMyCockpit> cachedCockpit;
-CachedDisplay cachedAlignDisplay;
+CachedBlock<IMyProgrammableBlock> cachedAutopilot;
 CachedDisplay communicationDisplay;
-CachedDisplay cachedUiDisplay;
+CachedDisplay mainUiDisplay;
+CachedDisplay auxUiDisplay;
 public Program()
 {
     Runtime.UpdateFrequency = UpdateFrequency.Update10;
-    IGC.UnicastListener.SetMessageCallback("yolo?");
-    IGC.SendBroadcastMessage("YoWhereAreYouMan", "I am lost");
+    IGC.UnicastListener.SetMessageCallback("<Unicast Received>");
+
+    //IGC.SendBroadcastMessage("YoWhereAreYouMan", "QueryGridInfo");
+
     cachedCockpit = new CachedBlock<IMyCockpit>(this);
-    cachedAlignDisplay = new CachedDisplay(this);
+    cachedAutopilot = new CachedBlock<IMyProgrammableBlock>(this);
     communicationDisplay = new CachedDisplay(this);
-    cachedUiDisplay = new CachedDisplay(this);
+    mainUiDisplay = new CachedDisplay(this);
+    auxUiDisplay = new CachedDisplay(this);
+    
+    
+    me = this;
 }
 
-
-List<IMyTerminalBlock> gyros = new List<IMyTerminalBlock>();
+static MyGridProgram me;
 
 string prevCustomData;
 void LoadConf() {
@@ -33,9 +40,10 @@ void LoadConf() {
     var textOutputBlockName = configIni.Get("blocks", "AlignDisplay");
     
     cachedCockpit.Name = configIni.Get("blocks", "Cockpit").ToString();
-    cachedAlignDisplay.Name = configIni.Get("blocks", "AlignDisplay").ToString();
+    cachedAutopilot.Name = configIni.Get("blocks", "Autopilot").ToString();
     communicationDisplay.Name = configIni.Get("blocks", "ComDisplay").ToString();
-    cachedUiDisplay.Name = configIni.Get("blocks", "UiDisplay").ToString();
+    mainUiDisplay.Name = configIni.Get("blocks", "UiDisplay").ToString();
+    auxUiDisplay.Name = configIni.Get("blocks", "AuxDisplay").ToString();
 }
 
 // "Natural fwd" is 0,0,-1 according to Quaternion.CreateFromForwardUp as that gives identity rotation
@@ -44,44 +52,61 @@ Vector3D alignedFwd = new Vector3D(0, 0, -1); // identity rotation
 Vector3D alignedUp = new Vector3D(0, 1, 0);
 Vector3D savedGridAlignPos = new Vector3D(0, 0, 0); // start w. world-aligned
 
-bool shouldAlignToGrid = false;
+bool _shouldAlignToGrid = false;
+
+List<IMyTerminalBlock> gyros = new List<IMyTerminalBlock>();
+void SetGridAlignment(Vector3D? fwd, Vector3D? up) {
+    _shouldAlignToGrid = fwd.HasValue && up.HasValue;
+    
+    
+    GridTerminalSystem.GetBlocksOfType<IMyGyro>(gyros, x => ((IMyGyro)x).CustomData.Contains("AutoGyro=True"));
+    foreach(var block in gyros) {
+        (block as IMyGyro).GyroOverride = _shouldAlignToGrid;
+    }
+    if(!_shouldAlignToGrid) return;
+    alignedFwd = fwd.Value;
+    alignedUp = up.Value;
+}
 
 Vector3D? targetPos;
 void Main(string argument) {
     
     LoadConf();
-    alignDisplay.AttachToSurface(cachedAlignDisplay.Surface);
     comDisplay.AttachToSurface(communicationDisplay.Surface);
-    ui.display.AttachToSurface(cachedUiDisplay.Surface);
+    mainUi.display.AttachToSurface(mainUiDisplay.Surface);
+    auxUi.display.AttachToSurface(auxUiDisplay.Surface);
     
-    ui.input = cachedCockpit.Block as IMyShipController;
-    ui.Update(Runtime.TimeSinceLastRun);
+    mainUi.input = cachedCockpit.Block as IMyShipController;
+    mainUi.Update(Runtime.TimeSinceLastRun);
+    auxUi.Update(Runtime.TimeSinceLastRun);
 
-    if(IGC.UnicastListener.HasPendingMessage) {
-        comDisplay.Clear();
-        while(IGC.UnicastListener.HasPendingMessage)
-        {
-            DealWithMessage(IGC.UnicastListener.AcceptMessage());
-        }
-    }
-    
-    alignDisplay.Clear();
-    alignDisplay.Writeln("yolo");
-
-    IMyCockpit cockpit = null;
     try {
+        if(IGC.UnicastListener.HasPendingMessage) {
+            comDisplay.Clear();
+            while(IGC.UnicastListener.HasPendingMessage)
+            {
+                DealWithMessage(IGC.UnicastListener.AcceptMessage());
+            }
+        }
+        
+        IMyCockpit cockpit = null;
         cockpit = cachedCockpit.Block;
         if(cockpit == null){
             alignDisplay.Writeln("No cockpit?");
             return;
         }
+        
+        if(argument != "") auxUi.Message($"Arg:\n{argument}", 2, 16);
+        
         if(argument == "askAlign")
         {
-            IGC.SendBroadcastMessage("YoWhereAreYouMan", "I am lost");
+            IGC.SendBroadcastMessage("YoWhereAreYouMan", "QueryGridInfo");
         }
         if(argument == "askDocking")
         {
-            IGC.SendBroadcastMessage("YoWhereAreYouMan", "I need this:DockingConnector:Above");
+            //IGC.SendBroadcastMessage("YoWhereAreYouMan", "I need this:DockingConnector:Above");
+            IGC.SendBroadcastMessage("YoWhereAreYouMan", "QueryDocking");
+            mainUi.Message("Asking for\ndocking", 2);
         }
         if(argument == "createWaypoint") {
             var keys = new List<MyIniKey>();
@@ -117,19 +142,22 @@ void Main(string argument) {
             targetPos = null;
         }
 
-        if(shouldAlignToGrid) {
-            AlignToGrid(cockpit);
-        }
+        AlignToGrid(cockpit);
+    }
+    catch(Exception e) {
+        mainUi.Message(e.ToString(), 10);
+        configIni.Set("Exception", "Error", e.ToString());
+        Me.CustomData = configIni.ToString();
     }
     finally {
-        ui.display.Complete();
-        alignDisplay.Complete();
+        mainUi.display.Complete();
+        auxUi.display.Complete();
         comDisplay.Complete();
     }
 }
 
 void DealWithMessage(MyIGCMessage msg) {
-    if(msg.Tag == "We here") {
+    if(msg.Tag == "GridInfo") {
         var lines = (msg.Data as string).Split('\n');
         
         var alignGridName = lines[0];
@@ -138,13 +166,14 @@ void DealWithMessage(MyIGCMessage msg) {
         var alignGridPos = lines[3];
         comDisplay.Writeln($"Station: {alignGridName}");
         Vector3D temp;
-        ui.QueueYesNo($"Align with {alignGridName}?", (bool yes) => {
+        mainUi.QueueYesNo($"Align with {alignGridName}?", (bool yes) => {
             if(!yes) {
-                ui.Message("Will not align", 2);
-                shouldAlignToGrid = true;
+                
+                mainUi.Message("Will not align", 2);
+                SetGridAlignment(null, null);
                 return;
             }
-            ui.Message("Will align", 2);
+            mainUi.Message("Will align", 2);
             if(!Vector3D.TryParse(alignFwd, out temp)) return;
             alignedFwd = temp;
             comDisplay.Writeln($" GridFwd: {str(temp)}");
@@ -154,10 +183,10 @@ void DealWithMessage(MyIGCMessage msg) {
             if(!Vector3D.TryParse(alignGridPos, out temp)) return;
             comDisplay.Writeln($" GridPos: {str(temp)}");
             savedGridAlignPos = temp;
-            shouldAlignToGrid = true;
+            SetGridAlignment(alignedFwd, alignedUp);
         });
     }
-    if(msg.Tag == "These fellas") {
+    if(msg.Tag == "BlockPosition") {
         comDisplay.Writeln("Got requested positions");
         var lines = (msg.Data as string).Split('\n');
         foreach(var line in lines) {
@@ -171,24 +200,51 @@ void DealWithMessage(MyIGCMessage msg) {
     }
     if(msg.Tag == "DockingRoute") {
         
-        comDisplay.Writeln("Docking route received");
+        mainUi.Message("Docking route received", 2);
         var lines = (msg.Data as string).Split('\n');
         var stationName = lines[0];        
         var routeName = $"Station-{stationName}-DockingWaypoints";
+        mainUi.Message($"Route to\n{stationName}\n{lines.Count()} waypoints", 2);
+        mainUi.Message($"Route stored as\n{routeName}", 2);
+        configIni.DeleteSection(routeName);
         foreach(string line in lines.Skip(1)) {
             var keyValue = line.Split(new char[] {'='}, 2, StringSplitOptions.RemoveEmptyEntries);
             configIni.Set(routeName, keyValue[0], keyValue[1]);
-            Me.CustomData = configIni.ToString();
         }
+        Me.CustomData = configIni.ToString();
         
-        ui.QueueYesNo($"Dock with {stationName}?", (bool yes) => EngageAutopilot($"{routeName}", "Dock"));
+        mainUi.QueueYesNo($"Dock with {stationName}?", (bool yes) => {
+            if(yes) EngageAutopilot(routeName, "Dock");
+        });
         
-        EngageAutopilot(routeName, "Dock");
+        //EngageAutopilot(routeName, "Dock");
     }
 }
 
 void EngageAutopilot(string route, string finalAction)
 {
+    mainUi.Message("AutoPilot:\n" + finalAction, 1);
+    
+    MyIni autopilotIni = new MyIni();    
+    var configParsedOk = autopilotIni.TryParse(cachedAutopilot.Block.CustomData);
+    if(!configParsedOk) {
+        mainUi.Message($"Failed to obtain\nconf from block\n{cachedAutopilot.Name}", 5);
+    }
+    
+    autopilotIni.DeleteSection("waypoints");
+    
+    var keys = new List<MyIniKey>();
+    configIni.GetKeys(route, keys);
+    foreach(var key in keys) {
+        var entries = configIni.Get(key).ToString().Split(',');
+        
+        // $"{newWp.WorldPos.X:0.00},{newWp.WorldPos.Y:0.00},{newWp.WorldPos.Z:0.00},{newWp.Radius},{newWp.ApproachSpeed},,{str(up)},{str(fwd)}");
+        var rewritten = string.Join(",", entries.Take(5)) + $",notify/{Me.CustomName}/AutoPilotAdvance:{route}:{key.Name}";
+        
+        autopilotIni.Set("waypoints", key.Name, rewritten);
+    }
+    cachedAutopilot.Block.CustomData = autopilotIni.ToString();
+    cachedAutopilot.Block.TryRun("begin");
 }
 
 class UI {
@@ -217,7 +273,33 @@ class UI {
     public Display display = new Display(false);
     public IMyShipController input;
 
-    public void Message(string s, int timeSeconds) {
+    private static char[] delimiterChars = { ',', ':', '-',' ' };
+    private static string[] delimiterStrs;
+
+    public void Message(string s, int timeSeconds, int splitLength=0) {
+        if(splitLength != 0)
+        {
+            if(delimiterStrs == null) delimiterStrs = delimiterChars.Select(x => x.ToString()).ToArray();
+            for(int delimiterIdx = 0; delimiterIdx < delimiterChars.Length; delimiterIdx++)
+            {
+                var delimiter = delimiterChars[delimiterIdx];
+                if(!s.Contains(delimiter)) continue;
+                var splits = s.Split(delimiter).ToList();
+                int count = 0;
+                
+                for(int splitIdx=0;splitIdx < splits.Count(); splitIdx++) {
+                    var ss = splits[splitIdx];
+                    if(count + ss.Length > splitLength) {
+                        if(splitIdx+1 < splits.Count) {
+                            splits[splitIdx+1] = "\n" + splits[splitIdx+1];
+                        }
+                        count = 0;
+                    }
+                    count += ss.Length;
+                }
+                s = string.Join(delimiterStrs[delimiterIdx], splits);
+            }
+        }
         var msgTime = new TimeSpan(0, 0, timeSeconds);
         var msg = new MessageType(s, msgTime);
         if(messages.Count() == 0) {
@@ -236,7 +318,6 @@ class UI {
         int rolly = Math.Sign(input?.RollIndicator ?? 0);
         int rollDiff = Math.Sign(rolly - prevRollSign);
         int pressRoll = prevRollSign == 0 ? rollDiff : 0;
-        display.Writeln($"{prevRollSign} {rolly} {rollDiff} {pressRoll}");
         prevRollSign = rolly;
         if(messages.Count() > 0) 
         {
@@ -266,6 +347,9 @@ class UI {
 
 
 void AlignToGrid(IMyCockpit cockpit) {
+    if(!_shouldAlignToGrid) return;
+    if(cockpit == null) return;
+    
     var saveToWorld = Quaternion.CreateFromForwardUp(alignedFwd, alignedUp);
     var worldToSaved = Quaternion.Conjugate(saveToWorld);
     
@@ -285,7 +369,6 @@ void AlignToGrid(IMyCockpit cockpit) {
 
     Matrix cockToShipMat;
     cockpit.Orientation.GetMatrix(out cockToShipMat);
-    GridTerminalSystem.GetBlocksOfType<IMyGyro>(gyros, x => ((IMyGyro)x).GyroOverride);
     foreach(var block in gyros) {
         var gyro = block as IMyGyro;
         gyro.Orientation.GetMatrix(out gyroToShipMat);
@@ -412,12 +495,18 @@ struct Display {
     
     public void Complete() {
         if(surface == null) return;
-        surface.ContentType = ContentType.TEXT_AND_IMAGE;
-        surface.Alignment = TextAlignment.CENTER;
+        if(builder.Length == 0) {
+            builder.Append(" ");
+            surface.WriteText(builder, false);
+            return;
+        }
+        if(surface.ContentType != ContentType.TEXT_AND_IMAGE) surface.ContentType = ContentType.TEXT_AND_IMAGE;
+        if(surface.Alignment != TextAlignment.CENTER) surface.Alignment = TextAlignment.CENTER;
         var pixelsAsFont1 = surface.MeasureStringInPixels(builder, "Debug", 1.0f);
         var pixelsOnSurface = surface.SurfaceSize;
         var ayy = pixelsOnSurface / pixelsAsFont1;
-        surface.FontSize = Math.Min(ayy.X, ayy.Y) * 2;
+        var yya = Math.Min(ayy.X, ayy.Y) * 2;
+        if(surface.FontSize != yya) surface.FontSize = yya;
         surface.WriteText(builder, false);
     }
 }
