@@ -9,6 +9,7 @@ Display comDisplay = new Display(false);
 
 CachedBlock<IMyCockpit> cachedCockpit;
 CachedBlock<IMyProgrammableBlock> cachedAutopilot;
+CachedBlock<IMyShipConnector> cachedConnector;
 CachedDisplay communicationDisplay;
 CachedDisplay mainUiDisplay;
 CachedDisplay auxUiDisplay;
@@ -21,6 +22,7 @@ public Program()
 
     cachedCockpit = new CachedBlock<IMyCockpit>(this);
     cachedAutopilot = new CachedBlock<IMyProgrammableBlock>(this);
+    cachedConnector = new CachedBlock<IMyShipConnector>(this);
     communicationDisplay = new CachedDisplay(this);
     mainUiDisplay = new CachedDisplay(this);
     auxUiDisplay = new CachedDisplay(this);
@@ -30,6 +32,8 @@ public Program()
 }
 
 static MyGridProgram me;
+
+string shipClass;
 
 string prevCustomData;
 void LoadConf() {
@@ -41,9 +45,12 @@ void LoadConf() {
     
     cachedCockpit.Name = configIni.Get("blocks", "Cockpit").ToString();
     cachedAutopilot.Name = configIni.Get("blocks", "Autopilot").ToString();
+    cachedConnector.Name = configIni.Get("blocks", "Connector").ToString();
     communicationDisplay.Name = configIni.Get("blocks", "ComDisplay").ToString();
     mainUiDisplay.Name = configIni.Get("blocks", "UiDisplay").ToString();
     auxUiDisplay.Name = configIni.Get("blocks", "AuxDisplay").ToString();
+    
+    shipClass = configIni.Get("ship", "class").ToString();
 }
 
 // "Natural fwd" is 0,0,-1 according to Quaternion.CreateFromForwardUp as that gives identity rotation
@@ -82,7 +89,7 @@ void Main(string argument) {
 
     try {
         if(IGC.UnicastListener.HasPendingMessage) {
-            comDisplay.Clear();
+            //comDisplay.Clear();
             while(IGC.UnicastListener.HasPendingMessage)
             {
                 DealWithMessage(IGC.UnicastListener.AcceptMessage());
@@ -105,7 +112,7 @@ void Main(string argument) {
         if(argument == "askDocking")
         {
             //IGC.SendBroadcastMessage("YoWhereAreYouMan", "I need this:DockingConnector:Above");
-            IGC.SendBroadcastMessage("YoWhereAreYouMan", "QueryDocking");
+            IGC.SendBroadcastMessage("YoWhereAreYouMan", $"QueryDocking:{shipClass}");
             mainUi.Message("Asking for\ndocking", 2);
         }
         if(argument == "createWaypoint") {
@@ -164,6 +171,7 @@ void DealWithMessage(MyIGCMessage msg) {
         var alignFwd = lines[1];
         var alignUp = lines[2];
         var alignGridPos = lines[3];
+        comDisplay.Clear();
         comDisplay.Writeln($"Station: {alignGridName}");
         Vector3D temp;
         mainUi.QueueYesNo($"Align with {alignGridName}?", (bool yes) => {
@@ -186,7 +194,8 @@ void DealWithMessage(MyIGCMessage msg) {
             SetGridAlignment(alignedFwd, alignedUp);
         });
     }
-    if(msg.Tag == "BlockPosition") {
+    else if(msg.Tag == "BlockPosition") {
+        comDisplay.Clear();
         comDisplay.Writeln("Got requested positions");
         var lines = (msg.Data as string).Split('\n');
         foreach(var line in lines) {
@@ -198,26 +207,99 @@ void DealWithMessage(MyIGCMessage msg) {
             }
         }
     }
-    if(msg.Tag == "DockingRoute") {
+    else if(msg.Tag == "DockingRoute") {
         
         mainUi.Message("Docking route received", 2);
         var lines = (msg.Data as string).Split('\n');
         var stationName = lines[0];        
         var routeName = $"Station-{stationName}-DockingWaypoints";
-        mainUi.Message($"Route to\n{stationName}\n{lines.Count()} waypoints", 2);
-        mainUi.Message($"Route stored as\n{routeName}", 2);
-        configIni.DeleteSection(routeName);
-        foreach(string line in lines.Skip(1)) {
-            var keyValue = line.Split(new char[] {'='}, 2, StringSplitOptions.RemoveEmptyEntries);
-            configIni.Set(routeName, keyValue[0], keyValue[1]);
+        mainUi.Message($"Route to\n{stationName}\n{lines.Count()-1} waypoints", 2);
+        
+        configIni.YeetSection(routeName);
+        mainUi.Message($"Storing route as\n{routeName}", 2);
+        Me.CustomData = configIni.ToString();
+        var configParsedOk = configIni.TryParse(Me.CustomData);
+        
+        for(int idx = 0; idx < lines.Count() -2; idx++)
+        {
+            var line = lines[idx+1];
+            mainUi.Message($"Waypoint {idx} at {line}", 1);
+            configIni.Set(routeName, idx.ToString(), line);
         }
+        var connector = lines.Last().Split(';');
+        var pos = Vec3DFromString(connector[0]);
+        
+        var stationConnectorQuat = QuatFromString(connector[1]);
+        
+        Quaternion cockpitQuat;
+        Quaternion connectorQuat;
+        cachedCockpit.Block.Orientation.GetQuaternion(out cockpitQuat);
+        cachedConnector.Block.Orientation.GetQuaternion(out connectorQuat);
+
+        var shipInternalRot = Quaternion.Concatenate(cockpitQuat, Quaternion.Inverse(connectorQuat));
+
+        Quaternion quat;
+        quat = Quaternion.Concatenate(shipInternalRot, stationConnectorQuat);
+        
+        
+        var offsetConnectorToCockpitGridSpace = (cachedCockpit.Block.Position - cachedConnector.Block.Position) * Me.CubeGrid.GridSize;
+        
+        var offsetConnectorToCockpitConnectorSpace = Vector3D.Transform(offsetConnectorToCockpitGridSpace, Quaternion.Conjugate(connectorQuat));
+        
+        offsetConnectorToCockpitConnectorSpace += Me.CubeGrid.GridSizeEnum == MyCubeSize.Small ? new Vector3D(0, 0, -0.45) : new Vector3D(0, 0, 0);
+        
+        comDisplay.Clear();
+        comDisplay.Writeln(str(offsetConnectorToCockpitGridSpace));
+        comDisplay.Writeln(str(offsetConnectorToCockpitConnectorSpace));
+        
+        var offsetConnectorToCockpitWorldSpace = Vector3D.Transform(offsetConnectorToCockpitConnectorSpace, stationConnectorQuat);;
+        
+        comDisplay.Writeln(str(offsetConnectorToCockpitWorldSpace));
+
+        pos += offsetConnectorToCockpitWorldSpace;
+        
+        configIni.Set(routeName, (lines.Count()-2).ToString(), $"{Vec3DToString(pos)},0.1,2,,{QuatToString(quat)}");
+        mainUi.Message($"Waypoint {lines.Count()-2} at yolo", 1);
+        
+        AlignToNextWaypoint(routeName,"0");
+
+
+        
         Me.CustomData = configIni.ToString();
         
         mainUi.QueueYesNo($"Dock with {stationName}?", (bool yes) => {
             if(yes) EngageAutopilot(routeName, "Dock");
         });
         
-        //EngageAutopilot(routeName, "Dock");
+        EngageAutopilot(routeName, "Dock");
+    }
+    if(msg.Tag == "AutoPilotAdvance")
+    {
+        var info = (msg.Data as string).Split(':');
+        var route = info[0];
+        var waypoint = info[1];
+        auxUi.Message($"Reached waypoint {waypoint}", 1, 16);
+        
+        AlignToNextWaypoint(route, waypoint);
+    }
+}
+
+void AlignToNextWaypoint(string route, string waypoint)
+{
+    var nextWaypoint = int.Parse(waypoint)+1;
+    var waypointInfo = configIni.Get(route, nextWaypoint.ToString()).ToString();
+    var entries = waypointInfo.Split(',');
+    if(entries.Count() > 6) {
+        var orientation = QuatFromStrings(entries[6], entries[7], entries[8], entries[9]);
+        
+        var fwd = Vector3D.Transform(new Vector3D(0, 0, -1), orientation);
+        var up = Vector3D.Transform(new Vector3D(0, 1, 0), orientation);
+        SetGridAlignment(fwd, up);
+    } else {
+        // No next waypoint! Should we dock? Probably!
+        auxUi.Message("We are probably done?", 3);
+        SetGridAlignment(null, null);
+        cachedConnector.Block.Connect();
     }
 }
 
@@ -226,25 +308,37 @@ void EngageAutopilot(string route, string finalAction)
     mainUi.Message("AutoPilot:\n" + finalAction, 1);
     
     MyIni autopilotIni = new MyIni();    
-    var configParsedOk = autopilotIni.TryParse(cachedAutopilot.Block.CustomData);
+    var configParsedOk = autopilotIni.TryParse(cachedAutopilot.Block?.CustomData);
     if(!configParsedOk) {
         mainUi.Message($"Failed to obtain\nconf from block\n{cachedAutopilot.Name}", 5);
     }
     
-    autopilotIni.DeleteSection("waypoints");
+    autopilotIni.YeetSection("waypoints");
     
     var keys = new List<MyIniKey>();
     configIni.GetKeys(route, keys);
-    foreach(var key in keys) {
+    keys = keys.OrderBy(x => x.Name).ToList();
+    for(int idx = 0; idx < keys.Count(); idx++)
+    {
+        var key = keys[idx];
         var entries = configIni.Get(key).ToString().Split(',');
         
         // $"{newWp.WorldPos.X:0.00},{newWp.WorldPos.Y:0.00},{newWp.WorldPos.Z:0.00},{newWp.Radius},{newWp.ApproachSpeed},,{str(up)},{str(fwd)}");
-        var rewritten = string.Join(",", entries.Take(5)) + $",notify/{Me.CustomName}/AutoPilotAdvance:{route}:{key.Name}";
+        var pre = idx == keys.Count() ? "wait+" : "";
+        var rewritten = string.Join(",", entries.Take(5)) + $",{pre}notify/{IGC.Me}/AutoPilotAdvance/{route}:{key.Name}";
         
-        autopilotIni.Set("waypoints", key.Name, rewritten);
+        autopilotIni.Set("waypoints", idx.ToString(), rewritten);
     }
+    
+    if(cachedAutopilot.Block == null)
+    {
+        mainUi.Message("No autopilot block!!", 10);        
+        return;
+    }
+    
     cachedAutopilot.Block.CustomData = autopilotIni.ToString();
-    cachedAutopilot.Block.TryRun("begin");
+    cachedAutopilot.Block?.TryRun("begin");
+    
 }
 
 class UI {
@@ -273,7 +367,7 @@ class UI {
     public Display display = new Display(false);
     public IMyShipController input;
 
-    private static char[] delimiterChars = { ',', ':', '-',' ' };
+    private static char[] delimiterChars = { ',', ':', '-', '/', ' ' };
     private static string[] delimiterStrs;
 
     public void Message(string s, int timeSeconds, int splitLength=0) {
@@ -525,8 +619,46 @@ string str(MatrixD m) {
     return str(m.Col0) + "\n" +
         str(m.Col1) + "\n" +
         str(m.Col2) + "\n";
-    
 }
+
+public static Quaternion QuatFromStrings(string x, string y, string z, string w)
+{
+    return new Quaternion(float.Parse(x), float.Parse(y), float.Parse(z), float.Parse(w));
+}
+public static Quaternion QuatFromString(string commaSeparated)
+{
+    var splits = commaSeparated.Split(',');
+    return QuatFromStrings(splits[0],splits[1],splits[2],splits[3]);
+}
+
+public static void QuatToStrings(Quaternion q, out string x, out string y, out string z, out string w)
+{
+    x = q.X.ToString();
+    y = q.Y.ToString();
+    z = q.Z.ToString();
+    w = q.W.ToString();
+}
+
+public static string QuatToString(Quaternion q) {
+    return $"{q.X:F2},{q.Y:F2},{q.Z:F2},{q.W:F2}";
+}
+
+
+public static Vector3D Vec3DFromStrings(string x, string y, string z)
+{
+    return new Vector3D(float.Parse(x), float.Parse(y), float.Parse(z));
+}
+
+public static Vector3D Vec3DFromString(string commaSeparated)
+{
+    var splits = commaSeparated.Split(',');
+    return Vec3DFromStrings(splits[0],splits[1],splits[2]);
+}
+
+public static string Vec3DToString(Vector3D v) {
+    return $"{v.X:F2},{v.Y:F2},{v.Z:F2}";
+}
+
 
 }
 
@@ -555,3 +687,13 @@ public static Dictionary<string, string> LoadDict(this string str) {
         .Where (part => part.Length == 2 && part[0].Trim() != "" && part[1].Trim() != "")
         .ToDictionary (sp => sp[0].Trim(), sp => sp[1].Trim());
 }
+
+public static void YeetSection(this MyIni ini, string sectionName)
+{
+    var keys = new List<MyIniKey>();
+    ini.GetKeys(sectionName, keys);
+    foreach(var key in keys) {
+        ini.Delete(key);
+    }
+}
+

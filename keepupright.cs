@@ -53,6 +53,7 @@ void Main(string argument) {
         Matrix worldToCockMat = MatrixD.Transpose(cockpit.WorldMatrix);
 
         Vector3D reversedGravity = Vector3D.Normalize(-cockpit.GetTotalGravity());
+        if(reversedGravity != reversedGravity) return; // getting NaN in space lol
         Vector3D reversedGravityCockSpace = Vector3D.TransformNormal(reversedGravity, worldToCockMat);
         Vector3D reversedGravityShipSpace = Vector3D.TransformNormal(reversedGravity, shipToCockMat);
         Vector3D yawReferenceCock = Vector3D.TransformNormal(yawReferenceWorld, worldToCockMat);

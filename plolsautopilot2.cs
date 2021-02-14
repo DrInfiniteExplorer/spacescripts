@@ -1,28 +1,3 @@
-#region Prelude
-using System;
-using System.Linq;
-using System.Text;
-using System.Collections;
-using System.Collections.Generic;
-
-using VRageMath;
-using VRage.Game;
-using VRage.Collections;
-using Sandbox.ModAPI.Ingame;
-using VRage.Game.Components;
-using VRage.Game.ModAPI.Ingame;
-using Sandbox.ModAPI.Interfaces;
-using Sandbox.Game.EntityComponents;
-using SpaceEngineers.Game.ModAPI.Ingame;
-using VRage.Game.ObjectBuilders.Definitions;
-using VRage.Game.ModAPI.Ingame.Utilities;
-using VRage.Game.GUI.TextPanel;
-
-// Change this namespace for each script you create.
-namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
-    public sealed class Program : MyGridProgram {
-    // Your code goes between the next #endregion and #region
-#endregion
 
     private MyIni storageIni = new MyIni();
     private MyIni configIni = new MyIni();
@@ -44,6 +19,13 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
     public static string str(Vector3 v) {
         return $"{v.X:F2}, {v.Y:F2}, {v.Z:F2}";
     }
+    public static string str(MatrixD m) {
+        return str(m.Col0) + "\n" +
+            str(m.Col1) + "\n" +
+            str(m.Col2) + "\n";
+        
+    }
+    
 
     public Program() {
         Runtime.UpdateFrequency = UpdateFrequency.Update10;
@@ -70,13 +52,13 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
 
         var keys = new List<MyIniKey>();
         configIni.GetKeys("waypoints", keys);
-        waypoints = keys.Select(key => Waypoint.FromString(key.Name, configIni.Get(key).ToString())).ToList();
+        waypoints = keys.Select(key => Waypoint.FromString(key.Name, configIni.Get(key).ToString())).OrderBy(x => x.Name).ToList();
 
         var allThrustersOnShip = new List<IMyThrust>();
         var thrustersByDirection = new Dictionary<Base6Directions.Direction, List<IMyThrust>>();
         thrusters = new SometimesRecalculating<Dictionary<Base6Directions.Direction, List<IMyThrust>>>(g => {
-            g.GetBlocksOfType<IMyThrust>(allThrustersOnShip);
-            ThrustController.DirectionalFromList(thrustersByDirection, allThrustersOnShip);
+            g.GetBlocksOfType<IMyThrust>(allThrustersOnShip, x => x.CubeGrid == Me.CubeGrid);
+            ThrustController.DirectionalFromList(thrustersByDirection, allThrustersOnShip, controller.Get(g));
             return thrustersByDirection;
         });
 
@@ -104,7 +86,7 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
             if (args == "createWaypoint") {
                 var newWp = new Waypoint {
                     Name = $"autoCreated{waypoints.Count+1}",
-                    WorldPos = Me.GetPosition(),
+                    WorldPos = controller.Get(GridTerminalSystem).GetPosition(),
                     ApproachSpeed = 2,
                     Radius = 15
                 };
@@ -117,10 +99,12 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
         } catch (Exception e) {
             frameText.Writeln($"Error: {e}");
         }
-        frameText.EndFrame();
+        finally {
+            frameText.EndFrame();
+        }
     }
     private void Frame(string args) {
-        var currentWorldPos = Me.GetPosition();
+        var currentWorldPos = controller.Get(GridTerminalSystem).GetPosition();
         frameText.Writeln($"State = {state} ({frameCounter++})");
         if (state == "waiting") {
             if (args == "continue") {
@@ -135,14 +119,19 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
         }
         if (state == "followingWaypoints") {
             frameText.Writeln($"Heading to {waypointFollower?.Current.Name}");
-            waypointFollower.Go(Me.GetPosition(), Me.WorldMatrix, (Action<string, Waypoint, List<OnArriveAction>>)((s, wp, actions) => {
+            waypointFollower.Go(controller.Get(GridTerminalSystem).GetPosition(), controller.Get(GridTerminalSystem).WorldMatrix, (Action<string, Waypoint, List<OnArriveAction>>)((s, wp, actions) => {
                 foreach (var action in actions) {
                     if (action.Action == "wait") {
                         state = "waiting";
                         thrustController.ResetThrusters();
                     } else if (action.Action == "notify") {
-                        var block = (GridTerminalSystem.GetBlockWithName(action.ComputerName) as IMyProgrammableBlock);
-                        block?.TryRun(action.Argument);
+                        //var block = (GridTerminalSystem.GetBlockWithName(action.ComputerName) as IMyProgrammableBlock);
+                        //block?.TryRun(action.Argument);
+                        if(action.IGCTarget == "") {
+                            IGC.SendBroadcastMessage(action.IGCTag, action.Argument);
+                        } else {
+                            IGC.SendUnicastMessage(long.Parse(action.IGCTarget), action.IGCTag, action.Argument);
+                        }
                     }
                 }
                 if (s == "finished") {
@@ -213,15 +202,26 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
                 frameText.Writeln($"Neg: {t.ThrustOverridePercentage:F2}");
             }
         }
-        public static void DirectionalFromList(Dictionary<Base6Directions.Direction, List<IMyThrust>> thrustersByDirection, IList<IMyThrust> thrusters) {
+        public static void DirectionalFromList(Dictionary<Base6Directions.Direction, List<IMyThrust>> thrustersByDirection, IList<IMyThrust> thrusters, IMyTerminalBlock referenceForward) {
             thrustersByDirection.Clear();
+            thrustersByDirection[Base6Directions.Direction.Left] = new List<IMyThrust>();
+            thrustersByDirection[Base6Directions.Direction.Right] = new List<IMyThrust>();
+            thrustersByDirection[Base6Directions.Direction.Up] = new List<IMyThrust>();
+            thrustersByDirection[Base6Directions.Direction.Down] = new List<IMyThrust>();
+            thrustersByDirection[Base6Directions.Direction.Forward] = new List<IMyThrust>();
+            thrustersByDirection[Base6Directions.Direction.Backward] = new List<IMyThrust>();
             frameText.Writeln($"Got some thursters: {thrusters.Count}");
-            thrustersByDirection[Base6Directions.Direction.Right] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(1, 0, 0)).ToList();
-            thrustersByDirection[Base6Directions.Direction.Left] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(-1, 0, 0)).ToList();
-            thrustersByDirection[Base6Directions.Direction.Up] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(0, 1, 0)).ToList();
-            thrustersByDirection[Base6Directions.Direction.Down] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(0, -1, 0)).ToList();
-            thrustersByDirection[Base6Directions.Direction.Backward] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(0, 0, 1)).ToList();
-            thrustersByDirection[Base6Directions.Direction.Forward] = thrusters.Where(t => t.GridThrustDirection == new Vector3I(0, 0, -1)).ToList();
+            var fwd = referenceForward.Orientation.TransformDirection(Base6Directions.Direction.Forward);
+            
+            
+            foreach(var thruster in thrusters) {
+                //var thrustInGridSpace = thruster.Orientation.TransformDirection(Base6Directions.Direction.Forward);
+                //var thrustInRefSpace = referenceForward.Orientation.TransformDirectionInverse(thrustInGridSpace);
+                var thrustInRefSpace = referenceForward.Orientation.TransformDirectionInverse(thruster.Orientation.Forward);
+                //frameText.Writeln($"Dir: {thrustInRefSpace} - {thruster.GridThrustDirection}");
+                
+                thrustersByDirection[thrustInRefSpace].Add(thruster);
+            }
         }
     }
     private class FrameText {
@@ -252,7 +252,8 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
     }
     private struct OnArriveAction {
         public string Action { get; set; }
-        public string ComputerName { get; set; }
+        public string IGCTarget { get; set; }
+        public string IGCTag { get; set; }
         public string Argument { get; set; }
         public static List<OnArriveAction> FromString(string s) {
             return s.Split('+')
@@ -266,8 +267,9 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
                         var b = a.Split('/');
                         return new OnArriveAction {
                             Action = "notify",
-                            ComputerName = b[1],
-                            Argument = b[2],
+                            IGCTarget = b[1],
+                            IGCTag = b[2],
+                            Argument = b[3],
                         };
                     }
                     return null;
@@ -338,8 +340,3 @@ namespace SpaceEngineers.UWBlockPrograms.BatteryMonitor {
             int x;
             return int.TryParse(s, out x) ? (int?)x : null;
         }
-
-#region PreludeFooter
-    }
-}
-#endregion
